@@ -187,7 +187,7 @@ class Checker:
                 if resp.ok:
                     return Status.OK
                 return Status.HTTP_ERR
-        except aiohttp.ServerTimeoutError:
+        except asyncio.TimeoutError:
             return Status.TIMEOUT
         except aiohttp.ClientConnectionError:
             if self.is_up:
