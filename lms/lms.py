@@ -20,17 +20,24 @@ def _network_available(host, port, timeout):
 
 
 async def network_available(host='1.1.1.1', port=53, timeout=3):
+    # TODO use asyncio.open_connection?
     return await asyncio.get_running_loop().run_in_executor(None,
                                                             _network_available, host, port, timeout)
 
 
-class Status(Enum):
+class RequestStatus(Enum):
     NONE = auto()
     OK = auto()
     TIMEOUT = auto()
     CONNECTION_ERR = auto()
     HTTP_ERR = auto()
     OTHER = auto()
+
+
+class SiteStatus(Enum):
+    UNINITIALIZED = auto()
+    UP = auto()
+    DOWN = auto()
 
 
 class Checker:
@@ -69,8 +76,8 @@ class Checker:
         self.interval = interval
 
         self._last_request = 0
-        self.status = Status.NONE
-        self.is_up = None
+        self.request_status = RequestStatus.NONE
+        self.site_status = SiteStatus.UNINITIALIZED
 
         self._ok_count = 0
         self._fail_count = 0
@@ -79,18 +86,18 @@ class Checker:
 
     @property
     def delta(self):
-        if self.status is Status.NONE:
+        if self.request_status is RequestStatus.NONE:
             return 0
-        if self.status is Status.OK:
-            if self.is_up == True:  # TODO use enum
+        if self.request_status is RequestStatus.OK:
+            if self.site_status is SiteStatus.UP:
                 return self.interval
             # is down / not initialized
             return self.ok_recheck_intervals[self._ok_count - 1]
-        if self.status is Status.TIMEOUT:
+        if self.request_status is RequestStatus.TIMEOUT:
             if self.timeout == self.max_timeout:
                 return self.interval
             return 0  # increase the timeout and retry
-        if self.is_up == False:
+        if self.site_status is SiteStatus.DOWN:
             return self.interval
         # is up / not initialized
         return self.fail_recheck_intervals[self._fail_count - 1]
@@ -105,35 +112,36 @@ class Checker:
         self._timeout = value
 
     @property
-    def is_up(self):
-        return self._is_up
+    def site_status(self):
+        return self._site_status
 
-    @is_up.setter
-    def is_up(self, value):
-        if value is None:
-            self._is_up = None
+    @site_status.setter
+    def site_status(self, value):
+        if value is SiteStatus.UNINITIALIZED:
+            self._site_status = value
             return
-        old_value = self._is_up
-        self._is_up = value
-        if old_value is None or old_value == value:
+
+        old_value = self._site_status
+        self._site_status = value
+        if old_value is SiteStatus.UNINITIALIZED or old_value == value:
             return
 
         self._ok_count = 0
         self._fail_count = 0
 
-        if value:
+        if value is SiteStatus.UP:
             status = f'✅ {self._domain} is up'
         else:
             status = f'❌ {self._domain} is down'
         asyncio.create_task(self.notifier.notify(status))  # cleanup at exit?
 
     async def update_status(self, value):
-        self.status = value
-        if value is Status.NONE:
+        self.request_status = value
+        if value is RequestStatus.NONE:
             return
 
         # handle timeouts
-        if value is Status.TIMEOUT:
+        if value is RequestStatus.TIMEOUT:
             # filter local problems (timeout won't be increased)
             # assuming minimal timeout is not too low, so the system will not get overloaded
             if not await network_available():
@@ -142,29 +150,30 @@ class Checker:
             self._fail_count = 0  # not sure about this
             self._try_increase_timeout()
             return
-        if value is Status.OK or value is Status.HTTP_ERR:
+        if value is RequestStatus.OK or value is RequestStatus.HTTP_ERR:
             self._try_decrease_timeout()
 
-        # initial status, up <-> down
-        if value is Status.OK:
-            if self.is_up != False:  # TODO
+        # to set initial status, we need N consecutive requests with the same status
+        # same rules apply to up <-> down status changes
+        if value is RequestStatus.OK:
+            if self.site_status in [SiteStatus.UP, SiteStatus.UNINITIALIZED]:
                 # filter temporary failures
                 self._fail_count = 0
-            if self.is_up != True:  # TODO
+            if self.site_status in [SiteStatus.DOWN, SiteStatus.UNINITIALIZED]:
                 self._ok_count += 1
                 if self._ok_count == self.ok_recheck + 1:
-                    self.is_up = True
+                    self.site_status = SiteStatus.UP
         else:  # Connection error / HTTP error / other
             # filter local problems
-            if value is not Status.HTTP_ERR and not await network_available():
+            if value is not RequestStatus.HTTP_ERR and not await network_available():
                 return
-            if self.is_up != True:  # TODO
+            if self.site_status in [SiteStatus.DOWN, SiteStatus.UNINITIALIZED]:
                 # filter short uptime intervals
                 self._ok_count = 0
-            if self.is_up != False:  # TODO
+            if self.site_status in [SiteStatus.UP, SiteStatus.UNINITIALIZED]:
                 self._fail_count += 1
                 if self._fail_count == self.fail_recheck + 1:
-                    self.is_up = False
+                    self.site_status = SiteStatus.DOWN
 
     def _try_decrease_timeout(self):
         if self._timeout_mul_pow == 0:
@@ -177,7 +186,7 @@ class Checker:
     def _try_increase_timeout(self):
         sys.stderr.write(f'Timed out ({round(self.timeout, 2)} s)\n'); sys.stderr.flush()
         if self.timeout == self.max_timeout:
-            self.is_up = False
+            self.site_status = SiteStatus.DOWN
             return
         self._timeout_mul_pow += 1
         self._timeout_decrease = self.timeout_decrease_after
@@ -189,17 +198,17 @@ class Checker:
                                         timeout=aiohttp.ClientTimeout(total=self.timeout),
                                         ssl=False) as resp:
                 if resp.ok:
-                    return Status.OK
-                return Status.HTTP_ERR
+                    return RequestStatus.OK
+                return RequestStatus.HTTP_ERR
         except asyncio.TimeoutError:
-            return Status.TIMEOUT
+            return RequestStatus.TIMEOUT
         except aiohttp.ClientConnectionError:
-            if self.is_up:
+            if self.site_status in [SiteStatus.UP, SiteStatus.UNINITIALIZED]:
                 sys.stderr.write(f'Connection error\n'); sys.stderr.flush()
-            return Status.CONNECTION_ERR
+            return RequestStatus.CONNECTION_ERR
         except aiohttp.ClientError as e:
             sys.stderr.write(f'WTF: {e}\n'); sys.stderr.flush()
-            return Status.OTHER
+            return RequestStatus.OTHER
 
     async def run(self):
         try:
