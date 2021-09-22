@@ -86,7 +86,9 @@ class Checker:
                 return self.interval
             return self.ok_recheck_intervals[self._ok_count - 1]
         if self.status is Status.TIMEOUT:
-            return 0  # increase the timeout and repeat
+            if self.timeout == self.max_timeout:
+                return self.interval
+            return 0  # increase the timeout and retry
         if not self.is_up:
             return self.interval
         return self.fail_recheck_intervals[self._fail_count - 1]
@@ -114,6 +116,9 @@ class Checker:
         if old_value is None or old_value == value:
             return
 
+        self._ok_count = 0
+        self._fail_count = 0
+
         if value:
             status = f'✅ {self._domain} is up'
         else:
@@ -132,6 +137,7 @@ class Checker:
             if not await network_available():
                 return
             self._ok_count = 0
+            self._fail_count = 0  # not sure about this
             self._try_increase_timeout()
             return
         if value is Status.OK or value is Status.HTTP_ERR:
