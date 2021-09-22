@@ -82,15 +82,17 @@ class Checker:
         if self.status is Status.NONE:
             return 0
         if self.status is Status.OK:
-            if self.is_up:
+            if self.is_up == True:  # TODO use enum
                 return self.interval
+            # is down / not initialized
             return self.ok_recheck_intervals[self._ok_count - 1]
         if self.status is Status.TIMEOUT:
             if self.timeout == self.max_timeout:
                 return self.interval
             return 0  # increase the timeout and retry
-        if not self.is_up:
+        if self.is_up == False:
             return self.interval
+        # is up / not initialized
         return self.fail_recheck_intervals[self._fail_count - 1]
 
     @property
@@ -143,16 +145,12 @@ class Checker:
         if value is Status.OK or value is Status.HTTP_ERR:
             self._try_decrease_timeout()
 
-        # initial status
-        if self.is_up is None:
-            self.is_up = value is Status.OK
-
-        # up <-> down
+        # initial status, up <-> down
         if value is Status.OK:
-            if self.is_up:
+            if self.is_up != False:  # TODO
                 # filter temporary failures
                 self._fail_count = 0
-            else:
+            if self.is_up != True:  # TODO
                 self._ok_count += 1
                 if self._ok_count == self.ok_recheck + 1:
                     self.is_up = True
@@ -160,10 +158,10 @@ class Checker:
             # filter local problems
             if value is not Status.HTTP_ERR and not await network_available():
                 return
-            if not self.is_up:
+            if self.is_up != True:  # TODO
                 # filter short uptime intervals
                 self._ok_count = 0
-            else:
+            if self.is_up != False:  # TODO
                 self._fail_count += 1
                 if self._fail_count == self.fail_recheck + 1:
                     self.is_up = False
