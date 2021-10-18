@@ -112,6 +112,14 @@ class Checker:
         self._timeout = value
 
     @property
+    def max_timeout(self):
+        return self._max_timeout
+
+    @max_timeout.setter
+    def max_timeout(self, value):
+        self._max_timeout = value
+
+    @property
     def site_status(self):
         return self._site_status
 
@@ -240,17 +248,34 @@ class LMSChecker(Checker):
     There are lots of false positives when using default timeouts.
     """
 
+    _custom_timeout = 75
+
+    @staticmethod
+    def _need_custom_timeout():
+        now = datetime.now()
+        return (3, 35) <= (now.hour, now.minute) <= (4, 5)
+
     @property
     def timeout(self):
         timeout = super().timeout
-        now = datetime.now()
-        if (3, 35) <= (now.hour, now.minute) <= (4, 5):
-            return max(timeout, 60)
+        if self._need_custom_timeout():
+            return max(timeout, self._custom_timeout)
         return timeout
 
     @timeout.setter
     def timeout(self, value):
         Checker.timeout.fset(self, value)
+
+    @property
+    def max_timeout(self):
+        max_timeout = super().max_timeout
+        if self._need_custom_timeout():
+            return max(max_timeout, self._custom_timeout)
+        return max_timeout
+
+    @max_timeout.setter
+    def max_timeout(self, value):
+        Checker.max_timeout.fset(self, value)
 
 
 async def main():
